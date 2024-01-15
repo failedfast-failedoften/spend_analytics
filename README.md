@@ -26,8 +26,8 @@ In the interest of maintainability technology choice was dictated by the existin
 ## Proposed Solution Overview
  Automated ETL(Extract-Transform-Load) Pipeline from ERP to BI Dashboard, batch-processing AP data, cleansing and enriching with data from other enterprise systems. High-level pipeline overview:
  - Alteryx Server triggers workflow on monthly schedule;
- - workflow pulls PeopleSoft tables, combines them cleans, merges with historical data and then enriches with data from files on S3, and FSx Fileshare; 
- - Processed dataset is pushed into Tableau server and saved on FSx as Alteryx Database file.
+ - Workflow pulls PeopleSoft tables, combines them, cleans, merges with historical data and then enriches with data from files on S3, and FSx Fileshare; 
+ - Processed dataset is pushed to Tableau server and saved on FSx as Alteryx Database file.
  
 ![image](assets/kitchen_sink-data_pipeline.jpeg) 
 
@@ -44,7 +44,17 @@ New Spend Analytics Solution had multiple effects on the team:
 If you are not interested in the technical details of how the solution was built you can stop reading now. 
 
 ### Extract
-So source data is located in the ERP, but before we Before we dive into detailes of the table schema, there are few things you need to know about AP abstractions and lifecycle:
+So the first step was to get the data from the ERP, but before we dive into detailes of the table schema, there are few things you need to know about Accounta Payable (AP) lifecycle and records. 
+
+You are probably familiar with the general flow of **Purchase Order created** -> **Goods delivered / Services Rendered** -> **Invoice received** -> **Payment**. But Accounting is not there only to support actual transaction,they also take care of bookkeeping. So some AP specifics you may not be aware of is that between reciving the invoice and submitting it for payment AP team would normally create additional abstractions called **Voucher** and **Distribution line**. 
+
+**Voucher** is a formal record, usually internal, that authorizes the payment of a vendor invoice. It summarizes the key details of the purchase, including: Vendor information, Invoice date and number, Purchase order number (if applicable), Description of goods or services, Amount owed, Payment terms, Approval signatures. The voucher serves as a central document for tracking the invoice from receipt to payment. It ensures that all necessary information is readily available and verifies that the payment is valid before it's processed.
+
+**A distribution line** is a sub-component of a voucher that specifies how the total payment amount will be allocated across different accounts in the company's general ledger. It typically includes: Account code(s), Department or cost center, Project or other internal reference, Amount to be distributed to each account.
+
+By using distribution lines, companies can track the costs associated with specific purchases and ensure accurate financial reporting. For example, if an invoice covers office supplies for different departments, you might have separate distribution lines for each department's expense account.
+
+This context might help you make little more sense about the below schema. 
 
 ```mermaid
 ---
@@ -64,7 +74,7 @@ erDiagram
         INV_ORIGIN VARCHAR2(30)
         ENTRY_STATUS VARCHAR2(1)
     }
-    VENDOR }|--o{ VOUCHER:"one or more VENDOR has 0 or more VOUCHERS"
+    VENDOR ||--o{ VOUCHER:"one or more VENDOR has 0 or more VOUCHERS"
     VENDOR {
         VENDOR_ID VARCHAR2(10)  PK 
         NAME VARCHAR2(40) 
@@ -79,7 +89,7 @@ erDiagram
         ACCOUNT_ID VARCHAR2(10) FK
         MONETARY_AMT NUMBER(26)
     }
-    ACCOUNT }|--|{ DISTRIBUTION_LINES:"one DISTRIBUTION LINE allocated to one or more ACCOUNTS"
+    ACCOUNT ||--|{ DISTRIBUTION_LINES:"one DISTRIBUTION LINE allocated to one or more ACCOUNTS"
     ACCOUNT {
         ACCOUNT_ID VARCHAR2(10) PK
         ACCOUNT_DESC VARCHAR2(30)
@@ -91,6 +101,8 @@ erDiagram
     }
 
 ```
+ Every record in `VOUCHER` table matches to at least one `DISTRIBUTION LINE`. And reference tables contain additional dimensions for `VENDOR`, `ACCOUNT` and `PROJECT` objects. SQL query seems straigthforward, however `ACCOUNT` and `VENDOR` tables contained duplicate keys, meaning these tables have many-to-many relationship to `VOUCHER` and `DISTRIBUTION LINE`. As identified later this was because both tables contained records about inactive / historical accounts and vendors. This complexity still could be overcome with use of window functions and common table expressions or temporary tables, so the query could look like this:
+
 ``` sql
 WITH VENDOR AS (
     SELECT VENDOR_ID, NAME1
