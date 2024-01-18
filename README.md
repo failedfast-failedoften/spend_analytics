@@ -41,7 +41,7 @@ New Spend Analytics Solution had multiple effects on the team:
 - This foundational pipeline allowed team to work on a deeper layers of analysis combining spend data with Sales, Logistics and Contract data.
 
 ## Detailed Process
-If you are not interested in the technical details of how the solution was built you can stop reading now. 
+If you are not interested in the technical details of how the solution was built you can stop reading here. 
 
 ### Extract
 So the first step was to get the data from the ERP, but before we dive into detailes of the table schema, there are few things you need to know about Accounta Payable (AP) lifecycle and records. 
@@ -54,105 +54,116 @@ You are probably familiar with the general flow of **Purchase Order created** ->
 
 By using distribution lines, companies can track the costs associated with specific purchases and ensure accurate financial reporting. For example, if an invoice covers office supplies for different departments, you might have separate distribution lines for each department's expense account.
 
-This context might help you make little more sense about the below schema. 
+This context might help you make more sense of the below schema. It represents relation between all fields identified as required for the Spend Analytics solution. 
 
 ```mermaid
 ---
 title: Peoplesoft Table schema
 ---
 erDiagram
-    VOUCHER ||--|{ DISTRIBUTION_LINES:"one VOUCHER-BU pair has one or more DISTRIBUTION LINES"
-    VOUCHER {
-        VOUCHER_ID VARCHAR2(8)  PK
-        INVOICE_ID VARCHAR2(30) 
-        INVOICE_DATE DATE 
-        ACCOUNTING_DATE DATE 
-        DUE_DATE DATE 
-        VENDOR_ID VARCHAR2(10)  FK
-        PAYMENT_TERMS VARCHAR2(5) 
-        BUSINESS_UNIT VARCHAR2(5)  PK, FK
-        INV_ORIGIN VARCHAR2(30)
-        ENTRY_STATUS VARCHAR2(1)
+    voucher ||--|{ distribution_lines:"one VOUCHER-BU pair has one or more DISTRIBUTION_LINES"
+    voucher {
+        voucher_id VARCHAR2(8)  PK
+        invoice_id VARCHAR2(30) 
+        invoice_date DATE 
+        accounting_date DATE 
+        due_date DATE 
+        vendor_id VARCHAR2(10)  FK
+        payment_terms VARCHAR2(5) 
+        business_unit VARCHAR2(5)  PK, FK
+        invoice_origin VARCHAR2(30)
+        voucher_status VARCHAR2(1)
     }
-    VENDOR ||--o{ VOUCHER:"one or more VENDOR has 0 or more VOUCHERS"
-    VENDOR {
-        VENDOR_ID VARCHAR2(10)  PK 
-        NAME VARCHAR2(40) 
+    vendor ||--o{ voucher:"one or more VENDOR has 0 or more VOUCHERS"
+    vendor {
+        vendor_id VARCHAR2(10)  PK 
+        vendor_name VARCHAR2(40) 
     }
-    DISTRIBUTION_LINES {
-        VOUCHER_ID VARCHAR2(8)  PK, FK
-        VOUCHER_LINE_ID NUMBER(38)  PK
-        LINE_DESCR VARCHAR2(30)
-        BUSINESS_UNIT VARCHAR2(5)  FK
-        PO_ID VARCHAR2(10) 
-        PROJECT_ID VARCHAR2(15) FK
-        ACCOUNT_ID VARCHAR2(10) FK
-        MONETARY_AMT NUMBER(26)
+    distribution_lines {
+        voucher_id VARCHAR2(8)  PK, FK
+        voucher_line_id NUMBER(38)  PK
+        line_desc VARCHAR2(30)
+        business_unit VARCHAR2(5)  FK
+        po_id VARCHAR2(10) 
+        project_id VARCHAR2(15) FK
+        account_id VARCHAR2(10) FK
+        monetary_amount NUMBER(26)
     }
-    ACCOUNT ||--|{ DISTRIBUTION_LINES:"one DISTRIBUTION LINE allocated to one or more ACCOUNTS"
-    ACCOUNT {
-        ACCOUNT_ID VARCHAR2(10) PK
-        ACCOUNT_DESC VARCHAR2(30)
+    account ||--|{ distribution_lines:"one DISTRIBUTION LINE allocated to one or more ACCOUNTS"
+    account {
+        account_id VARCHAR2(10) PK
+        account_desc VARCHAR2(30)
     }
-    PROJECT ||--o{ DISTRIBUTION_LINES:"one DISTRIBUTION LINE attributed to 0 or one PROJECTS"
-    PROJECT {
-        PROJECT_ID VARCHAR2(15) PK
-        PROJECT_DESC VARCHAR2(30)
+    project ||--o{ distribution_lines:"one DISTRIBUTION LINE attributed to 0 or one PROJECTS"
+    project {
+        project_id VARCHAR2(15) PK
+        project_desc VARCHAR2(30)
     }
+  
 
 ```
- Every record in `VOUCHER` table matches to at least one `DISTRIBUTION LINE`. And reference tables contain additional dimensions for `VENDOR`, `ACCOUNT` and `PROJECT` objects. SQL query seems straigthforward, however `ACCOUNT` and `VENDOR` tables contained duplicate keys, meaning these tables have many-to-many relationship to `VOUCHER` and `DISTRIBUTION LINE`. As identified later this was because both tables contained records about inactive / historical accounts and vendors. This complexity still could be overcome with use of window functions and common table expressions or temporary tables, so the query could look like this:
+ Every record in `VOUCHER` table matches to at least one `DISTRIBUTION LINE`. And reference tables contain additional dimensions for `VENDOR`, `ACCOUNT` and `PROJECT` objects. SQL query seems straigthforward, however `ACCOUNT` and `VENDOR` tables contained duplicate keys, meaning these tables have many-to-many relationship to `VOUCHER` and `DISTRIBUTION LINE`. As identified later this was due to both tables contained records about inactive / historical accounts and vendors. This complexity still could be solved with use of window functions and common table expressions or temporary tables, so the query could look something like this:
 
 ``` sql
-WITH VENDOR AS (
-    SELECT VENDOR_ID, NAME1
-    FROM(
-        SELECT VENDOR_ID,
-            NAME1,
-            VENDOR_STATUS,
-            ROW_NUMBER() OVER(PARTITION BY VENDOR_ID ORDER BY VENDOR_STATUS) RN
-        FROM PS_VENDOR)
-    WHERE RN = 1),
+-- initialize ven CTE to store unique vendor records by showing active vendors first and recording row number for every record in each vendor_id. Meaning if rn > 1 then record is dublicate. 
+WITH ven
+     AS (SELECT vendor_id,
+                vendor_name
+         FROM  (SELECT vendor_id,
+                       vendor_name,
+                       vendor_status,
+                       Row_number()
+                         OVER(
+                           partition BY vendor_id
+                           ORDER BY vendor_status) rn
+                FROM   vendor)
+         WHERE  rn = 1),
+-- initialize acc CTE to store unique account records following same logic as for ven
+     acc
+     AS (SELECT account_id,
+                account_descr
+         FROM  (SELECT account_id,
+                       account_descr,
+                       effective_dt,
+                       effective_status,
+                       Row_number()
+                         OVER(
+                           partition BY account
+                           ORDER BY effective_dt DESC, effective_status) RN
+                FROM   account)
+         WHERE  rn = 1)
 
-    ACC AS (
-    SELECT ACCOUNT,
-	    DESCR
-    FROM(
-        SELECT  ACCOUNT, 
-            DESCR,
-            EFFDT,
-            EFF_STATUS,
-			ROW_NUMBER() OVER(PARTITION BY ACCOUNT ORDER BY EFFDT DESC, EFF_STATUS) RN
-        FROM PS_GL_ACCOUNT_TBL 
-        )
-    WHERE RN=1
-    )
+SELECT A.voucher_id,
+       A.invoice_id,
+       A.vendor_id,
+       ven.vendor_name,
+       A.invoice_dt,
+       A.accounting_dt,
+       A.invoice_origin,
+       B.monetary_amount AS inv_line_total,
+       B.account_id,
+       acc.account_desc,
+       B.project_id,
+       D.project_desc
+FROM   voucher A
+       JOIN distribution_lines B
+         ON A.business_unit = B.business_unit
+            AND A.voucher_id = B.voucher_id
+       JOIN ven
+         ON A.vendor_id = ven.vendor_id
+       JOIN acc
+         ON B.account = acc.account
+       LEFT JOIN project D
+              ON B.project_id = D.project_id
+--Dates are used as placeholders and overriden with Alteryx Dynamic Input tool
+WHERE  A.accounting_dt >= To_date('2023-02-01', 'YYYY-MM-DD')
+       AND A.accounting_dt <= To_date('2023-02-02', 'YYYY-MM-DD')
 
-SELECT A.VOUCHER_ID,
-    A.INVOICE_ID,
-    A.VENDOR_ID,
-    C.NAME1 AS VENDOR_NAME,
-    A.INVOICE_DT,
-    A.ACCOUNTING_DT,
-    A.OPRID AS INV_ORIGIN,
-    A.VCHR_TTL_LINES AS INV_LINE_COUNT,
-    A.GROSS_AMT AS INV_TOTAL,
-    B.MONETARY_AMOUNT,
-    B.ACCOUNT,
-    ACC.DESCR AS ACCOUNT_DESCR,
-    B.PROJECT_ID,
-    D.DESCR AS PROJECT_DESCR
-        
-FROM PS_VOUCHER A
-    JOIN PS_DISTRIB_LINE B ON A.BUSINESS_UNIT = B.BUSINESS_UNIT
-        AND A.VOUCHER_ID = B.VOUCHER_ID
-    JOIN VENDOR C on A.VENDOR_ID = C.VENDOR_ID 
-    JOIN ACC on B.ACCOUNT = ACC.ACCOUNT
-    LEFT JOIN PS_PROJECT D on B.PROJECT_ID = D.PROJECT_ID
-    
-WHERE A.ACCOUNTING_DT >= TO_DATE('2023-02-01','YYYY-MM-DD') 
-    and A.ACCOUNTING_DT <= TO_DATE('2023-02-02','YYYY-MM-DD') --Dates are used as placeholders and overriden with Alteryx Dynamic Input tool
-    
-ORDER BY A.BUSINESS_UNIT, A.VOUCHER_ID, B.VOUCHER_LINE_NUM
+ORDER  BY A.business_unit,
+          A.voucher_id,
+          B.voucher_line_num  
 
 ```
+However since we strive to keep focus on solutions's maintainability and knowing that main data transform would anyway happen within Alteryx it was decided to keep SQL queries concise and straightforward. This led me to pulling reference tables separately and joining them in the Alteryx. This way `PROJECT`, `VENDOR`, and `ACCOUNT` querries were trimmed down to simple `SELECT... FROM...` statement and main query was left with 2 tables and only 1 join.
+
+
