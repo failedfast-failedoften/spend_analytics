@@ -2,9 +2,9 @@
 Present is a real customer case, but respecting confidentiality all data was replaced with dummy and any database schemas are high-level approximations.
 
 ## Motivation
-Customer's procurement team was underserved from Technology / Analytics perspective and suffered from the limited access to spend data. This directly impacted their efficiency and ability to find cost optimizaton opportunities, identify potential compliance risks or track spend trends overtime. 
+Customer's procurement team was underserved from Technology / Analytics perspective and suffered from the limited access to spend data. This directly impacted their efficiency and ability to find cost optimization opportunities, identify potential compliance risks or track spend trends overtime. 
 
-The only tool they had was macro-enabled Excel document (further refered as 'master'), which was only capable of providing high-level monthly summary metrics per supplier, was not user friendly to a general business user, and was tedious to maintain. Team had access to all the raw data and tools, but lacked the skillset to convert them into fully operational spend analytics solution.
+The only tool they had was macro-enabled Excel document (further referred as 'master'), which was only capable of providing high-level monthly summary metrics per supplier, was not user friendly to a general business user, and was tedious to maintain. Team had access to all the raw data and tools, but lacked the skill set to convert them into fully operational spend analytics solution.
 
 ## Legacy solution
 Legacy tool was hard to maintain, could not be used by an average business user, did not scale well and couldn't provide required level of details. 
@@ -33,6 +33,17 @@ In the interest of maintainability technology choice was dictated by the existin
 
 
 ## Results
+
+Resulting product is a multi-tab Tableau Dashboard helping team to track core spend stats, like:
+  - Spend per Supplier / Category / Location; 
+  - Invoice Count and average invoice amounts per Supplier / Location; 
+  - Category spend trend analytics (supplier mix, and how it changed over past 5 years; Region split, etc.);
+  - Payment Terms.
+
+![image](assets/dash_preview.png)
+![image](assets/spendvsBU.PNG)
+![image](assets/payment_terms.png)
+
 New Spend Analytics Solution had multiple effects on the team:
 - For the first time team gained access to their spend data at scale and was able to compare the spend by category, supplier, time period or geography;
 - Such visibility enabled team to identify over $120M worth of cost-optimization opportunities and deploy 2-year program to execute them;
@@ -105,7 +116,7 @@ erDiagram
  Every record in `VOUCHER` table matches to at least one `DISTRIBUTION LINE`. And reference tables contain additional dimensions for `VENDOR`, `ACCOUNT` and `PROJECT` objects. SQL query seems straigthforward, however `ACCOUNT` and `VENDOR` tables contained duplicate keys, meaning these tables have many-to-many relationship to `VOUCHER` and `DISTRIBUTION LINE`. As identified later this was due to both tables contained records about inactive / historical accounts and vendors. This complexity still could be solved with use of window functions and common table expressions or temporary tables, so the query could look something like this:
 
 ``` sql
--- initialize ven CTE to store unique vendor records by showing active vendors first and recording row number for every record in each vendor_id. Meaning if rn > 1 then record is dublicate. 
+-- initialize [ven] CTE to store unique vendor records by showing active vendors first and recording row number for every record in each vendor_id. Meaning if rn > 1 then record is a duplicate. 
 WITH ven
      AS (SELECT vendor_id,
                 vendor_name
@@ -118,7 +129,7 @@ WITH ven
                            ORDER BY vendor_status) rn
                 FROM   vendor)
          WHERE  rn = 1),
--- initialize acc CTE to store unique account records following same logic as for ven
+-- initialize [acc] CTE to store unique account records following same logic as for ven
      acc
      AS (SELECT account_id,
                 account_descr
@@ -155,7 +166,7 @@ FROM   voucher A
          ON B.account = acc.account
        LEFT JOIN project D
               ON B.project_id = D.project_id
---Dates are used as placeholders and overriden with Alteryx Dynamic Input tool
+-- Dates are used as placeholders and overridden with Alteryx Dynamic Input tool
 WHERE  A.accounting_dt >= To_date('2023-02-01', 'YYYY-MM-DD')
        AND A.accounting_dt <= To_date('2023-02-02', 'YYYY-MM-DD')
 
@@ -164,6 +175,28 @@ ORDER  BY A.business_unit,
           B.voucher_line_num  
 
 ```
-However since we strive to keep focus on solutions's maintainability and knowing that main data transform would anyway happen within Alteryx it was decided to keep SQL queries concise and straightforward. This led me to pulling reference tables separately and joining them in the Alteryx. This way `PROJECT`, `VENDOR`, and `ACCOUNT` querries were trimmed down to simple `SELECT... FROM...` statement and main query was left with 2 tables and only 1 join.
+However since we strive to keep focus on solutions's maintainability and knowing that main data transformation would anyway happen within Alteryx it was decided to keep SQL queries concise and straightforward. This led me to pulling reference tables separately and joining them in Alteryx. This way `PROJECT`, `VENDOR`, and `ACCOUNT` queries were trimmed down to simple `SELECT... FROM...` statement and main query was left with 2 tables and only 1 join.
+
+As per conversation with the customer it was decided to keep the update cadence as monthly. In practice this was implemented through schedule on Alteryx Server and Dynamic Input tool to dynamically replace dates in the query.
+
+## Transform
+
+Full Alteryx workflow 
+Category mapping was created and maintained separately with set of categorization rules defined for various GL-Supplier combinations. 
+
+
+    '''WORK IN PROGRESS'''
+    pull workflow from datashaper and configure dynamic input tool
+    clean-up reference tables load
+    check if vendor details reference should be added as well
+    provide explanation to selecting to store .yxdb data files vs exporting to Teradata (lack of external users)
+
+## Delivery to user
+Resulting dataset is loaded to:
+- FSx folder for ease of access to processed data in case of any ad-hoc requests from stakeholders;
+- Tableau Server for creating a BI layer for users to self-serve core spend insights.
+
+Tableau dashboard has 
+
 
 
