@@ -13,7 +13,7 @@ High-level Legacy workflow:
 1. Analyst would schedule multiple queries in PeopleSoft to pull 4 tables monthly and manually download files.
 2. Manually adjust naming conventions in the newly generated files, clean reference data, compare existing reference files to new and implement changes to existing files linked to the master.
 3. Gather additional data from peers regarding updates to reference data (like list of active Business Units).
-4. Refresh querries in the master.
+4. Refresh queries in the master.
 5. Once a year update master model to include all 12 months data
 
 ## Toolkit
@@ -41,7 +41,9 @@ Resulting product is a multi-tab Tableau Dashboard helping team to track core sp
   - Payment Terms.
 
 ![image](assets/dash_preview.png)
+
 ![image](assets/spendvsBU.PNG)
+
 ![image](assets/payment_terms.png)
 
 New Spend Analytics Solution had multiple effects on the team:
@@ -55,13 +57,13 @@ New Spend Analytics Solution had multiple effects on the team:
 If you are not interested in the technical details of how the solution was built you can stop reading here. 
 
 ### Extract
-So the first step was to get the data from the ERP, but before we dive into detailes of the table schema, there are few things you need to know about Accounta Payable (AP) lifecycle and records. 
+So the first step was to get the data from the ERP, but before we dive into details of the table schema, there are few things you need to know about Accounts Payable (AP) lifecycle and records. 
 
-You are probably familiar with the general flow of **Purchase Order created** -> **Goods delivered / Services Rendered** -> **Invoice received** -> **Payment**. But Accounting is not there only to support actual transaction,they also take care of bookkeeping. So some AP specifics you may not be aware of is that between reciving the invoice and submitting it for payment AP team would normally create additional abstractions called **Voucher** and **Distribution line**. 
+You are probably familiar with the general flow of **Purchase Order created** -> **Goods delivered / Services Rendered** -> **Invoice received** -> **Payment**. But Accounting is not there only to support actual transaction,they also take care of bookkeeping. So some AP specifics you may not be aware of is that between receiving the invoice and submitting it for payment AP team would normally create additional abstractions called **Voucher** and **Distribution line**. 
 
 **Voucher** is a formal record, usually internal, that authorizes the payment of a vendor invoice. It summarizes the key details of the purchase, including: Vendor information, Invoice date and number, Purchase order number (if applicable), Description of goods or services, Amount owed, Payment terms, Approval signatures. The voucher serves as a central document for tracking the invoice from receipt to payment. It ensures that all necessary information is readily available and verifies that the payment is valid before it's processed.
 
-**A distribution line** is a sub-component of a voucher that specifies how the total payment amount will be allocated across different accounts in the company's general ledger. It typically includes: Account code(s), Department or cost center, Project or other internal reference, Amount to be distributed to each account.
+**Distribution line** is a sub-component of a voucher that specifies how the total payment amount will be allocated across different accounts in the company's general ledger. It typically includes: Account code(s), Department or cost center, Project or other internal reference, Amount to be distributed to each account.
 
 By using distribution lines, companies can track the costs associated with specific purchases and ensure accurate financial reporting. For example, if an invoice covers office supplies for different departments, you might have separate distribution lines for each department's expense account.
 
@@ -113,7 +115,7 @@ erDiagram
   
 
 ```
- Every record in `VOUCHER` table matches to at least one `DISTRIBUTION LINE`. And reference tables contain additional dimensions for `VENDOR`, `ACCOUNT` and `PROJECT` objects. SQL query seems straigthforward, however `ACCOUNT` and `VENDOR` tables contained duplicate keys, meaning these tables have many-to-many relationship to `VOUCHER` and `DISTRIBUTION LINE`. As identified later this was due to both tables contained records about inactive / historical accounts and vendors. This complexity still could be solved with use of window functions and common table expressions or temporary tables, so the query could look something like this:
+ Every record in `VOUCHER` table matches to at least one `DISTRIBUTION LINE`. And reference tables contain additional dimensions for `VENDOR`, `ACCOUNT` and `PROJECT` objects. SQL query seems straightforward, however `ACCOUNT` and `VENDOR` tables contained duplicate keys, meaning these tables have many-to-many relationship to `VOUCHER` and `DISTRIBUTION LINE`. As identified later this was due to both tables contained records about inactive / historical accounts and vendors. This complexity still could be solved with use of window functions and common table expressions or temporary tables, so the query could look something like this:
 
 ``` sql
 -- initialize [ven] CTE to store unique vendor records by showing active vendors first and recording row number for every record in each vendor_id. Meaning if rn > 1 then record is a duplicate. 
@@ -167,8 +169,8 @@ FROM   voucher A
        LEFT JOIN project D
               ON B.project_id = D.project_id
 -- Dates are used as placeholders and overridden with Alteryx Dynamic Input tool
-WHERE  A.accounting_dt >= To_date('2023-02-01', 'YYYY-MM-DD')
-       AND A.accounting_dt <= To_date('2023-02-02', 'YYYY-MM-DD')
+WHERE  A.accounting_dt >= TO_DATE('2023-02-01', 'YYYY-MM-DD')
+       AND A.accounting_dt <= TO_DATE('2023-02-02', 'YYYY-MM-DD')
 
 ORDER  BY A.business_unit,
           A.voucher_id,
@@ -181,22 +183,50 @@ As per conversation with the customer it was decided to keep the update cadence 
 
 ## Transform
 
-Full Alteryx workflow 
-Category mapping was created and maintained separately with set of categorization rules defined for various GL-Supplier combinations. 
+Full Alteryx workflow is split in 6 parts:
+![image](./assets/full_workflow.PNG)
 
 
-    '''WORK IN PROGRESS'''
-    pull workflow from datashaper and configure dynamic input tool
-    clean-up reference tables load
-    check if vendor details reference should be added as well
-    provide explanation to selecting to store .yxdb data files vs exporting to Teradata (lack of external users)
+1. **ERP transaction data intake:** that is handled through Dynamic input tool. First we create 2 fields to hold first and last dates of the previous monht (so if workflow run on August 5 it should pull the date for full month of July) Dates are populated with formula
+![image](./assets/dynamic_dates.PNG)
+and new values replace placeholders from the original SQL in Dynamic Input tool:
+![image](./assets/dynamic_replace_dates.PNG)
 
-## Delivery to user
+
+2. **Reference tables intake and joins:** 
+
+Error handling:
+![image](./assets/error_handling.PNG)
+![image](./assets/error_handling_notifications.PNG)
+
+3. **Category normalization:**
+Category mapping was created and maintained separately with a set of categorization rules defined for various GL-Supplier combinations. These rules inform Level 1, Level 2 and Level 3 categories depending on what source system transaction originated from, what is the supplier and what account the spend was allocated to. In this workflow we join Category map with the transaction data by GL Account and Supplier id fields to get the Categorization for every transaction. Source system dictated rules are spelled in a formula tool separately as they mostly define out of scope transactions. 
+
+![image](./assets/category_finetuning.PNG)
+
+4. **Location details enrichment**
+
+5. **Formatting and filtering**
+![image](./assets/add_fields.PNG)
+6. **Output**
+![image](./assets/sqlite_output.PNG)
+
+
+
+### Deliver to user
 Resulting dataset is loaded to:
 - FSx folder for ease of access to processed data in case of any ad-hoc requests from stakeholders;
 - Tableau Server for creating a BI layer for users to self-serve core spend insights.
 
-Tableau dashboard has 
+Tableau dashboard is split in multiple tabs to allow different use-cases out of the box:
+- **Spend Overview** to give a quick snapshot of total spend in a given period, split by Supplier, Region and Category; 
+- **Supplier Spend Time Series** to give more detailed view in individual supplier spend, monitor year over year trend, compare the footprint and spend to other suppliers in the same category; 
+- **Category Spend Trends** and **Category Drill-down (in chart and tabular formats)** to give a year over year comparison of individual category spend and spend distribution change between sub-categories;
+- **BU Trends** to identify locations with spend significantly higher or significantly lower than its peers, comparison made by clustering facilities into multiple tiers by their sales volume in a given period;
+- **Payment Terms** to provide outlook of Payment Terms mix within the portfolio and monitor on-time payments for individual suppliers. 
+
+## Conclusion
+First implemented in December 2021, this solution was refactored in 2023 due to a switch to the new ERP and foundational data model change, but overall pipeline, logic and components have stayed largely the same. As on July 2024 the product still serves analytical needs of Customer's Procurement team.
 
 
 
