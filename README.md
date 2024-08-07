@@ -187,17 +187,19 @@ Full Alteryx workflow is split in 6 parts:
 ![image](./assets/full_workflow.PNG)
 
 
-1. **ERP transaction data intake:** that is handled through Dynamic input tool. First we create 2 fields to hold first and last dates of the previous monht (so if workflow run on August 5 it should pull the date for full month of July) Dates are populated with formula
+1. **ERP transaction data intake:** 
+That is handled through Dynamic input tool. First we create 2 fields to hold first and last dates of the previous month (so if workflow run on August 5 it should pull the date for full month of July) Dates are populated with formula: 
 ![image](./assets/dynamic_dates.PNG)
-and new values replace placeholders from the original SQL in Dynamic Input tool:
-![image](./assets/dynamic_replace_dates.PNG)
+These calculated then values replace placeholders from the original SQL in Dynamic Input tool:
+![image](./assets/dynamic_replace_dates.PNG). This way on every run workflow only pulls full previous month worth of invoices.
 
 
 2. **Reference tables intake and joins:** 
-
-Error handling:
+As a second step we pull all the look-up tables containing details like GL account descriptions, vendor and project names. This data is then filtered to exclude any duplicates (i.e. same vendor number was assigned to inactive legacy vendors and currently active vendors) and joined back with transactions data. 
+To handle any cases where a record could not be found in the lookup-table we established error handling mechanism by using Message tool to generate error message in case record was not joined and workflow events which will send email with log details in case workflow ran with error. 
 ![image](./assets/error_handling.PNG)
 ![image](./assets/error_handling_notifications.PNG)
+This allowed us timely resolve any data inconsistencies and ensure the resulting database includes full spend. 
 
 3. **Category normalization:**
 Category mapping was created and maintained separately with a set of categorization rules defined for various GL-Supplier combinations. These rules inform Level 1, Level 2 and Level 3 categories depending on what source system transaction originated from, what is the supplier and what account the spend was allocated to. In this workflow we join Category map with the transaction data by GL Account and Supplier id fields to get the Categorization for every transaction. Source system dictated rules are spelled in a formula tool separately as they mostly define out of scope transactions. 
@@ -205,18 +207,20 @@ Category mapping was created and maintained separately with a set of categorizat
 ![image](./assets/category_finetuning.PNG)
 
 4. **Location details enrichment**
+On the next step we enriched the dataset with Location details, like geo-spatial coordinates, region assignment, full address, facility opened and closed dates, etc. This data is stored and maintained in AWS environment, so separate scheduled workflow was setup to pull the data from S3, filter and format it to the requirements.
 
 5. **Formatting and filtering**
+Prior to serving the resulting dataset to the users we've created couple more calculated fields that supposed to provide an easier way for the user to filter the dataset to their use-case. For example concatenating Vendor number with Vendor name in one field allow us to filter the dataset on any of these fields using just 1 filter.
 ![image](./assets/add_fields.PNG)
 6. **Output**
-![image](./assets/sqlite_output.PNG)
-
-
-
-### Deliver to user
 Resulting dataset is loaded to:
-- FSx folder for ease of access to processed data in case of any ad-hoc requests from stakeholders;
+- SQLite database in FSx folder for ease of access to processed data in case of any ad-hoc requests from stakeholders; 
+![image](./assets/sqlite_output.PNG)
+Monthly data is appended to the existing historical data already stored in the database. 
 - Tableau Server for creating a BI layer for users to self-serve core spend insights.
+
+
+### Deliver to users
 
 Tableau dashboard is split in multiple tabs to allow different use-cases out of the box:
 - **Spend Overview** to give a quick snapshot of total spend in a given period, split by Supplier, Region and Category; 
